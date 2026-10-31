@@ -1,6 +1,7 @@
 import {TRAIN_STORAGE,TRAIN_RULES,TRAIN_HINTS,createTrainRun,trainAction,trainTick,trainHidden,trainInspection,trainMaxAir,retryTrain,trainCheckpoint,decodeTrainSave} from './train-state.js';
 import {createTrainWorld} from './train-world.js';
 import {createTrainAudio} from './train-audio.js';
+import {installTrainTouchGuard,bindTrainHold} from './train-input.js';
 
 export function mountLastTrain(host){
   const life=new AbortController(),signal=life.signal,audio=createTrainAudio();
@@ -8,7 +9,7 @@ export function mountLastTrain(host){
   try{stored=decodeTrainSave(localStorage.getItem(TRAIN_STORAGE));}catch{stored.writable=false;}
   let run=stored.run||createTrainRun(),mode='title',world,frame,last=null,disposed=false,drag=null,captionTimer=0,caption='',lastPart='',cueBeat=-1,uiTime=0,stepSound=0,checkpointTime=0,heldTap={forward:0,strafe:0,time:0};
   let visibilityPause=false;
-  const keys=new Set(),heldPointers=new Set(),reduced=matchMedia('(prefers-reduced-motion: reduce)');
+  const keys=new Set(),heldPointers=new Set(),moveHeld=new Set(),inputResets=[],reduced=matchMedia('(prefers-reduced-motion: reduce)');
   const q=s=>host.querySelector(s),qa=s=>[...host.querySelectorAll(s)];
   const safeText=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const on=(node,type,fn,options={})=>node?.addEventListener(type,fn,{...options,signal});
@@ -28,22 +29,14 @@ export function mountLastTrain(host){
     <dialog class="train-dialog" id="train-dialog" aria-labelledby="train-dialog-title"><button type="button" class="train-dialog-close" id="train-dialog-close" aria-label="닫고 돌아가기">×</button><div id="train-dialog-body"></div></dialog>
   </section>`;
   const root=q('.last-train'),canvas=q('#train-canvas'),dialog=q('#train-dialog');
-  // Keep held game controls from opening browser menus or starting page gestures.
-  // Scope these listeners to this episode; aborting its lifecycle removes them.
-  const blockBrowserAction=e=>e.preventDefault();
-  for(const type of ['contextmenu','dragstart','dblclick'])on(root,type,blockBrowserAction);
-  on(root,'selectstart',e=>{if(!e.target.closest('input,textarea'))e.preventDefault();});
-  for(const type of ['gesturestart','gesturechange','gestureend'])on(root,type,blockBrowserAction,{passive:false});
-  on(root,'touchmove',e=>{if(e.touches.length>1)e.preventDefault();},{passive:false});
-  on(root,'wheel',e=>{if(e.ctrlKey||e.metaKey)e.preventDefault();},{passive:false});
-  on(root,'keydown',e=>{if((e.ctrlKey||e.metaKey)&&['Equal','Minus','Digit0','NumpadAdd','NumpadSubtract','Numpad0'].includes(e.code))e.preventDefault();});
+  installTrainTouchGuard(root,{signal});
   function save(){
     if(!stored.writable)return;
     try{localStorage.setItem(TRAIN_STORAGE,JSON.stringify({version:1,run:trainCheckpoint(run),endings:stored.endings}));}
     catch{stored.writable=false;q('#train-save-warning').hidden=false;q('#train-save-warning').textContent='이번 진행은 저장되지 않습니다. 브라우저 저장 공간을 확인해 주세요.';}
   }
   function paused(){return mode!=='play'||dialog.open||document.hidden||visibilityPause;}
-  function clearControls(){keys.clear();heldPointers.clear();heldTap.time=0;run.eyes=false;run.holdingBreath=false;drag=null;}
+  function clearControls(){keys.clear();inputResets.forEach(reset=>reset());heldPointers.clear();moveHeld.clear();heldTap.time=0;run.eyes=false;run.holdingBreath=false;drag=null;}
   function say(text,seconds=5){caption=text;captionTimer=seconds;q('#train-caption').textContent=text;}
   function audioLabel(){q('#train-audio').textContent=audio.enabled?'♫':'♪';q('#train-audio').setAttribute('aria-label',audio.enabled?'소리 끄기':'소리 켜기');q('#train-audio').setAttribute('aria-pressed',String(audio.enabled));}
   function modal(kind,html){
@@ -78,11 +71,14 @@ export function mountLastTrain(host){
   function keypad(){
     if(run.stage!=='power')return;
     if(run.panelUnlocked){switchPanel();return;}
-    modal('keypad',`<small class="dialog-eyebrow">객차 전원함 / 봉인 잠금</small><h2 id="train-dialog-title">절취번호를 역순으로</h2><p class="panel-note">승차권을 확인한 뒤 세 자리를 입력하십시오.</p><form id="train-code-form"><label class="sr-only" for="train-code">전원함 암호</label><input id="train-code" inputmode="numeric" pattern="[0-9]{3}" maxlength="3" autocomplete="off" placeholder="— — —"><div class="train-keypad">${['1','2','3','4','5','6','7','8','9','⌫','0','↵'].map(x=>`<button type="button" data-key="${x}" aria-label="${x==='⌫'?'한 자리 지우기':x==='↵'?'번호 확인':x}">${x}</button>`).join('')}</div></form><button type="button" id="panel-ticket">승차권 확인</button>`);
-    const input=q('#train-code');input.oninput=()=>input.value=input.value.replace(/\D/g,'').slice(0,3);
-    const submit=()=>{if(input.value.length===3)act('code',input.value);};
+    modal('keypad',`<small class="dialog-eyebrow">객차 전원함 / 봉인 잠금</small><h2 id="train-dialog-title">절취번호를 역순으로</h2><p class="panel-note">승차권을 확인한 뒤 세 자리를 입력하십시오.</p><form id="train-code-form"><label class="sr-only" for="train-code">전원함 암호</label><output id="train-code" tabindex="0" aria-live="polite">— — —</output><div class="train-keypad">${['1','2','3','4','5','6','7','8','9','⌫','0','↵'].map(x=>`<button type="button" data-key="${x}" aria-label="${x==='⌫'?'한 자리 지우기':x==='↵'?'번호 확인':x}">${x}</button>`).join('')}</div></form><button type="button" id="panel-ticket">승차권 확인</button>`);
+    const display=q('#train-code');let code='';
+    const submit=()=>{if(code.length===3)act('code',code);};
+    const enter=k=>{if(k==='↵')submit();else{code=k==='⌫'?code.slice(0,-1):k==='clear'?'':(code+k).slice(0,3);display.value=code||'— — —';audio.resume();audio.cue('click');}};
     q('#train-code-form').onsubmit=e=>{e.preventDefault();submit();};
-    qa('[data-key]').forEach(b=>b.onclick=()=>{const k=b.dataset.key;if(k==='↵')submit();else{input.value=k==='⌫'?input.value.slice(0,-1):(input.value+k).slice(0,3);audio.resume();audio.cue('click');}});
+    q('#train-code-form').onkeydown=e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;const k=/^\d$/.test(e.key)?e.key:e.key==='Backspace'?'⌫':e.key==='Delete'?'clear':e.key==='Enter'&&e.target===display?'↵':null;if(k){e.preventDefault();enter(k);}};
+    qa('[data-key]').forEach(b=>b.onclick=()=>enter(b.dataset.key));
+    display.focus({preventScroll:true});
     q('#panel-ticket').onclick=()=>{showTicket();const back=document.createElement('button');back.type='button';back.className='back-to-panel';back.textContent='전원함으로 돌아가기';back.onclick=keypad;q('#train-dialog-body').append(back);};
   }
   function switchPanel(){
@@ -132,26 +128,23 @@ export function mountLastTrain(host){
   on(q('#train-interact'),'click',()=>{interact(world.pick(run));canvas.focus();});
   qa('[data-object]').forEach(b=>on(b,'click',()=>{interact(b.dataset.object);if(!dialog.open)canvas.focus();}));
   function heldButton(button,action){
-    on(button,'pointerdown',e=>{if(paused()||e.button!==0)return;e.preventDefault();button.setPointerCapture(e.pointerId);heldPointers.add(action);act(action,true);});
-    const release=e=>{if(heldPointers.has(action)){heldPointers.delete(action);act(action,false);}button.releasePointerCapture?.(e.pointerId);canvas.focus();};
-    on(button,'pointerup',release);on(button,'pointercancel',()=>{heldPointers.delete(action);run[action==='eyes'?'eyes':'holdingBreath']=false;});
-    on(button,'keydown',e=>{if(['Space','Enter'].includes(e.code)){e.preventDefault();e.stopPropagation();if(!e.repeat&&!paused())act(action,true);}});
-    on(button,'keyup',e=>{if(['Space','Enter'].includes(e.code)){e.preventDefault();e.stopPropagation();act(action,false);}});
+    inputResets.push(bindTrainHold(button,{signal,enabled:()=>!paused(),onChange:(held,{cancelled})=>{
+      if(held)heldPointers.add(action);else heldPointers.delete(action);
+      const keyboard=action==='eyes'?keys.has('Space'):keys.has('ShiftLeft')||keys.has('ShiftRight');
+      if(cancelled)run[action==='eyes'?'eyes':'holdingBreath']=keyboard||held;else act(action,keyboard||held);
+    },onRelease:()=>canvas.focus({preventScroll:true})}));
   }
   heldButton(q('#action-eyes'),'eyes');heldButton(q('#action-breath'),'breath');
   const moveKeys={forward:'KeyW',back:'KeyS',left:'KeyA',right:'KeyD'};
   qa('[data-move]').forEach(b=>{
-    let downAt=0;
-    on(b,'pointerdown',e=>{if(paused()||e.button!==0)return;e.preventDefault();b.setPointerCapture(e.pointerId);downAt=performance.now();keys.add(moveKeys[b.dataset.move]);});
-    on(b,'pointerup',e=>{keys.delete(moveKeys[b.dataset.move]);if(performance.now()-downAt<220&&!paused()){heldTap={forward:b.dataset.move==='forward'?1:b.dataset.move==='back'?-1:0,strafe:b.dataset.move==='right'?1:b.dataset.move==='left'?-1:0,time:.36};}canvas.focus();});
-    on(b,'pointercancel',()=>keys.delete(moveKeys[b.dataset.move]));
+    inputResets.push(bindTrainHold(b,{signal,enabled:()=>!paused(),onChange:held=>{if(held)moveHeld.add(moveKeys[b.dataset.move]);else moveHeld.delete(moveKeys[b.dataset.move]);},onTap:duration=>{if(duration<220&&!paused())heldTap={forward:b.dataset.move==='forward'?1:b.dataset.move==='back'?-1:0,strafe:b.dataset.move==='right'?1:b.dataset.move==='left'?-1:0,time:.36};},onRelease:()=>canvas.focus({preventScroll:true})}));
     on(b,'click',e=>{if(e.detail===0&&!paused()){heldTap={forward:b.dataset.move==='forward'?1:b.dataset.move==='back'?-1:0,strafe:b.dataset.move==='right'?1:b.dataset.move==='left'?-1:0,time:.36};}});
   });
   qa('[data-look]').forEach(b=>on(b,'click',()=>{if(!paused()&&!run.eyes){run.position.yaw+=b.dataset.look==='left'?Math.PI/2:-Math.PI/2;run.position.pitch=0;}canvas.focus();}));
-  on(canvas,'pointerdown',e=>{if(paused()||e.button!==0)return;e.preventDefault();canvas.focus();canvas.setPointerCapture(e.pointerId);drag={x:e.clientX,y:e.clientY,distance:0};});
-  on(canvas,'pointermove',e=>{if(!drag||paused()||run.eyes)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;drag.distance+=Math.abs(dx)+Math.abs(dy);run.position.yaw-=dx*.004;run.position.pitch=Math.max(-1.05,Math.min(.85,run.position.pitch-dy*.003));drag.x=e.clientX;drag.y=e.clientY;});
-  on(canvas,'pointerup',e=>{if(drag&&drag.distance<5&&!paused()){const rect=canvas.getBoundingClientRect();interact(world.pick(run,(e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1));}drag=null;});
-  on(canvas,'pointercancel',()=>drag=null);
+  on(canvas,'pointerdown',e=>{if(paused()||e.button!==0||drag)return;e.preventDefault();canvas.focus({preventScroll:true});canvas.setPointerCapture(e.pointerId);drag={id:e.pointerId,x:e.clientX,y:e.clientY,distance:0};});
+  on(canvas,'pointermove',e=>{if(!drag||drag.id!==e.pointerId||paused()||run.eyes)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;drag.distance+=Math.abs(dx)+Math.abs(dy);run.position.yaw-=dx*.004;run.position.pitch=Math.max(-1.05,Math.min(.85,run.position.pitch-dy*.003));drag.x=e.clientX;drag.y=e.clientY;});
+  on(canvas,'pointerup',e=>{if(!drag||drag.id!==e.pointerId)return;if(drag.distance<5&&!paused()){const rect=canvas.getBoundingClientRect();interact(world.pick(run,(e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1));}drag=null;});
+  for(const type of ['pointercancel','lostpointercapture'])on(canvas,type,e=>{if(drag?.id===e.pointerId)drag=null;});
   on(document,'keydown',e=>{
     if(e.code==='Escape'){if(mode==='play'&&!dialog.open){e.preventDefault();pauseMenu();}return;}
     if(paused()||e.target.closest('input,textarea,select'))return;
@@ -159,8 +152,9 @@ export function mountLastTrain(host){
     keys.add(e.code);if(e.repeat)return;
     if(e.code==='Space')act('eyes',true);else if(e.code.startsWith('Shift'))act('breath',true);else if(e.code==='KeyF')act('flash');else if(e.code==='KeyC')act('crouch');else if(e.code==='KeyE')interact(world.pick(run));else if(e.code==='KeyR')manual();
   });
-  on(document,'keyup',e=>{keys.delete(e.code);if(paused())return;if(e.code==='Space')act('eyes',false);else if(e.code.startsWith('Shift'))act('breath',false);});
+  on(document,'keyup',e=>{keys.delete(e.code);if(paused())return;if(e.code==='Space')act('eyes',heldPointers.has('eyes'));else if(e.code.startsWith('Shift'))act('breath',heldPointers.has('breath')||keys.has('ShiftLeft')||keys.has('ShiftRight'));});
   on(window,'blur',()=>{clearControls();});
+  on(window,'pagehide',clearControls);on(window,'orientationchange',clearControls);
   on(document,'visibilitychange',()=>{if(document.hidden){clearControls();audio.pause();if(mode==='play')visibilityPause=true;}else if(visibilityPause&&mode==='play')pauseMenu();});
   function refreshUI(){
     const active=mode==='play';root.dataset.stage=run.stage;root.dataset.state=mode;root.classList.toggle('train-playing',active);root.classList.toggle('eyes-closed',active&&run.eyes);root.classList.toggle('crouching',run.crouch);root.classList.toggle('is-stunned',run.stun>0);root.classList.toggle('motion-reduced',reduced.matches);
@@ -184,7 +178,8 @@ export function mountLastTrain(host){
     const dt=last===null?0:Math.min(.06,(now-last)/1000);last=now;
     const stop=paused(),active=mode==='play';let moving=false;
     if(active&&!stop){
-      let f=Number(keys.has('KeyW'))-Number(keys.has('KeyS')),st=Number(keys.has('KeyD'))-Number(keys.has('KeyA'));
+      const down=key=>keys.has(key)||moveHeld.has(key);
+      let f=Number(down('KeyW'))-Number(down('KeyS')),st=Number(down('KeyD'))-Number(down('KeyA'));
       if(heldTap.time>0){heldTap.time-=dt;f+=heldTap.forward;st+=heldTap.strafe;}
       if(!run.eyes){run.position.yaw+=(Number(keys.has('ArrowLeft'))-Number(keys.has('ArrowRight')))*dt*1.6;run.position.pitch=Math.max(-1.05,Math.min(.85,run.position.pitch+(Number(keys.has('ArrowUp'))-Number(keys.has('ArrowDown')))*dt));}
       moving=Boolean(f||st);world.move(run,f,st,dt);handleEvents(trainTick(run,dt));audio.state(run);
