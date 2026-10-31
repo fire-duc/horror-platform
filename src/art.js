@@ -1,4 +1,4 @@
-// Original SVG set pieces are shared by the archive and the playable scenes.
+// Original SVG illustrations for the archive cards. Live scenes use scenery.js.
 let serial = 0;
 const human = (x,y,s=1,fill='#080b0b') => `<g transform="translate(${x} ${y}) scale(${s})" fill="${fill}"><ellipse cy="-40" rx="11" ry="14"/><path d="M-9-27 Q-20-22-20 20 L-13 22-11 60H-2L2 24 5 60H14L13 22 20 20 Q19-20 9-27Z"/></g>`;
 const line = (x1,y1,x2,y2,c='#77796e',o=.25) => `<path d="M${x1} ${y1}L${x2} ${y2}" stroke="${c}" opacity="${o}"/>`;
