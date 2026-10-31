@@ -42,12 +42,14 @@ export function mountLastTrain(host){
   function modal(kind,html){
     clearControls();audio.pause();q('#train-dialog-body').innerHTML=html;
     if(!dialog.open)dialog.showModal();
+    dialog.scrollTop=0;
   }
   function closeModal(){if(dialog.open)dialog.close();}
   on(dialog,'close',()=>{if(mode==='play'&&!document.hidden){visibilityPause=false;audio.resume();canvas.focus({preventScroll:true});}});
   on(q('#train-dialog-close'),'click',closeModal);
   function manual(highlight=-1){
-    modal('rules',`<div class="paper-heading"><small>해진선 / 야간 승객용 사본</small><h2 id="train-dialog-title">마지막 열차 이용 수칙</h2><p>이 안내문의 글씨는 검은색입니다.<br>방송이 다르게 안내해도 이 문서를 따르십시오.</p></div><div class="train-rule-list">${TRAIN_RULES.map((r,i)=>`<article ${i===highlight?'class="rule-highlight"':''}><h3>${r.title}</h3><p>${r.text}</p></article>`).join('')}</div><div class="paper-stamp">승객 1명 / 외부 배포 금지</div>`);
+    modal('rules',`<div class="paper-heading"><small>해진선 · 막차</small><h2 id="train-dialog-title">야간 승차 안내</h2><p>승차 인원은 한 명입니다.</p></div><ol class="train-rule-list" aria-label="야간 승차 수칙">${TRAIN_RULES.map((r,i)=>`<li data-rule-group="${r.group}" ${r.group===highlight?'class="rule-highlight"':''}><span class="train-rule-number" aria-hidden="true">${String(i+1).padStart(2,'0')}</span><p>${r.text}</p></li>`).join('')}</ol><div class="paper-footer"><span class="paper-stamp">해진선 야간 운행실</span><button type="button" id="train-rules-fold">접어두기</button></div>`);
+    q('#train-rules-fold').onclick=closeModal;
     if(highlight>=0)q('.rule-highlight')?.scrollIntoView({block:'center'});
   }
   function showTicket(){
