@@ -22,10 +22,12 @@ export function installTrainTouchGuard(root,{signal,now=()=>performance.now()}={
     let blocked=e.touches.length>1;
     for(const t of e.changedTouches){
       const target=element(t.target),native=Boolean(editable(target));
-      const tap=target?.closest('button,input[type="checkbox"],output[tabindex]')||target?.closest('label')?.control;
+      const label=target?.closest('label');
+      const tap=target?.closest('button,input[type="checkbox"],output[tabindex]')||label?.control;
+      const hit=label?.control===tap?label:tap;
       const paper=!tap&&!native?target?.closest('.train-dialog[open]'):null;
       const owned=!native&&!paper;
-      touches.set(t.identifier,{tap,paper,native,owned,x:t.clientX,y:t.clientY,lastY:t.clientY,moved:false});
+      touches.set(t.identifier,{tap,hit,paper,native,owned,x:t.clientX,y:t.clientY,lastY:t.clientY,moved:false});
       blocked ||= owned;
     }
     if(blocked)prevent(e);
@@ -53,7 +55,7 @@ export function installTrainTouchGuard(root,{signal,now=()=>performance.now()}={
         const tap=s.tap;
         const moved=s.moved||Math.hypot(t.clientX-s.x,t.clientY-s.y)>12;
         if(!cancelled&&!moved&&tap?.isConnected&&!tap.disabled&&!tap.hasAttribute('data-game-hold')){
-          const r=tap.getBoundingClientRect();
+          const r=s.hit.getBoundingClientRect();
           if(t.clientX>=r.left&&t.clientX<=r.right&&t.clientY>=r.top&&t.clientY<=r.bottom)activate.push(tap);
         }
       }else if(!cancelled&&s.paper&&!s.moved){
